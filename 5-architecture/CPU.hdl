@@ -1,0 +1,70 @@
+/**
+ * The Hack Central Processing unit (CPU).
+ * Parses the binary code in the instruction input and executes it according to the
+ * Hack machine language specification. In the case of a C-instruction, computes the
+ * function specified by the instruction. If the instruction specifies to read a memory
+ * value, the inM input is expected to contain this value. If the instruction specifies
+ * to write a value to the memory, sets the outM output to this value, sets the addressM
+ * output to the target address, and asserts the writeM output (when writeM = 0, any
+ * value may appear in outM).
+ * If the reset input is 0, computes the address of the next instruction and sets the
+ * pc output to that value. If the reset input is 1, sets pc to 0.
+ * Note: The outM and writeM outputs are combinational: they are affected by the
+ * instruction's execution during the current cycle. The addressM and pc outputs are
+ * clocked: although they are affected by the instruction's execution, they commit to
+ * their new values only in the next cycle.
+ */
+CHIP CPU {
+
+    IN  inM[16],         // M value input  (M = contents of RAM[A])
+        instruction[16], // Instruction for execution
+        reset;           // Signals whether to re-start the current
+                         // program (reset==1) or continue executing
+                         // the current program (reset==0).
+
+    OUT outM[16],        // M value output
+        writeM,          // Write to M? 
+        addressM[15],    // Address in data memory (of M)
+        pc[15];          // address of next instruction
+
+    PARTS:
+    /* Choose the register to accept ALU output out of 3 options {A, D, M} */
+    DMux (in=true, sel=instruction[15], a=atype, b=ctype);
+    Or   (a=atype, b=instruction[5], out=aInstr);
+    And  (a=ctype, b=instruction[4], out=cInstr);
+
+    /* A Reg */
+    Mux16     (a=outalu, b=instruction, sel=atype, out=gotoareg);
+    ARegister (in=gotoareg, load=aInstr, out=outareg, out[0..14]=addressM);
+
+    /* D Reg */
+    Mux16 (a=outareg, b=inM, sel=instruction[12], out=inputsel);
+
+    /* ALU */
+    ALU (x=outdreg, y=inputsel, zx=instruction[11], nx=instruction[10], zy=instruction[9], ny=instruction[8], 
+         f=instruction[7], no=instruction[6], out=outalu, zr=outzr, ng=outng, out=outM);
+    And (a=ctype, b=instruction[3], out=writeM);
+
+    DRegister (in=outalu, load=cInstr, out=outdreg);
+
+    /** Program Counter:
+    * We need to choose between the operations PC=A and PC++ (the default). The jump condition determines if PC=A happens
+    * or not. As we know from the Hack machine language there are six different conditions, with the exception of the
+    * default JMP, they are JGT, JEQ, JGE, JLT, JNE, and JLE. However, we only need JGT and JLE to cover all cases.
+    * To our aid we have the outputs 'zrout' and 'ngout' of the ALU, which determine if the output is zero or negative. 
+    * The first three bits of the instruction specifies the jump condition, what each bit does is seen in Fig. 4.5 in 
+    * The Elements of Computing Systems. **/
+    Or  (a=outzr, b=outng, out=leqzero);             // the ALU tells us if out <=0
+    Not (in=leqzero, out=posout);                    // if not, out>0 
+
+    And (a=instruction[0], b=posout, out=jgt);       // If out>0 jump
+    And (a=instruction[1], b=outzr, out=jeq);        // If out=0 jump
+    And (a=instruction[2], b=outng, out=jlt);        // if out<0 jump
+    Or  (a=jeq, b=jeq, out=jle);                     // if out<=0 jump
+    Or  (a=jgt, b=jle, out=jmp);                     // finilize jump
+
+    And (a=jmp, b=ctype, out=goandjump);             // C tells us to jump
+    Not (in=goandjump, out=donotjump);               // or not
+
+    PC  (in=outareg, load=goandjump, inc=donotjump, reset=reset, out[0..14]=pc);
+}
